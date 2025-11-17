@@ -40,35 +40,57 @@ const t = {
 function useUserProfile(user) {
   const [profile, setProfile] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
 
   useEffect(() => {
-    let unsub = () => {}
+    let cancelled = false
     async function run() {
+      setError('')
       if (!user) { setProfile(null); setLoading(false); return }
-      const refDoc = doc(db, 'users', user.uid)
-      const snap = await getDoc(refDoc)
-      if (snap.exists()) {
-        setProfile(snap.data())
-      } else {
-        const base = { name: user.displayName || '', address: '', phone: '', language: 'Dansk', photoURL: user.photoURL || '', darkMode: false, createdAt: serverTimestamp(), updatedAt: serverTimestamp() }
-        await setDoc(refDoc, base)
-        setProfile(base)
+      try {
+        const refDoc = doc(db, 'users', user.uid)
+        const snap = await getDoc(refDoc)
+        if (cancelled) return
+        if (snap.exists()) {
+          setProfile(snap.data())
+        } else {
+          const base = { name: user.displayName || '', address: '', phone: '', language: 'Dansk', photoURL: user.photoURL || '', darkMode: false, createdAt: serverTimestamp(), updatedAt: serverTimestamp() }
+          try {
+            await setDoc(refDoc, base)
+            if (cancelled) return
+            setProfile(base)
+          } catch (e) {
+            // If we cannot write (rules), still let the app continue with a local profile
+            setError('Kunne ikke gemme profiloplysninger (tilladelser).')
+            setProfile({ ...base, createdAt: null, updatedAt: null })
+          }
+        }
+      } catch (e) {
+        // If we cannot read (rules), continue with a minimal local profile
+        setError('Kunne ikke hente profil (tilladelser).')
+        setProfile({ name: user.displayName || '', address: '', phone: '', language: 'Dansk', photoURL: user.photoURL || '', darkMode: false })
+      } finally {
+        if (!cancelled) setLoading(false)
       }
-      setLoading(false)
     }
     run()
-    return () => unsub()
+    return () => { cancelled = true }
   }, [user])
 
   async function save(updates) {
     if (!user) return
     const refDoc = doc(db, 'users', user.uid)
     const next = { ...profile, ...updates, updatedAt: serverTimestamp() }
-    await setDoc(refDoc, next, { merge: true })
-    setProfile((p) => ({ ...p, ...updates }))
+    try {
+      await setDoc(refDoc, next, { merge: true })
+      setProfile((p) => ({ ...p, ...updates }))
+    } catch (e) {
+      // keep local state even if remote write fails
+      setProfile((p) => ({ ...p, ...updates }))
+    }
   }
 
-  return { profile, loading, save }
+  return { profile, loading, save, error }
 }
 
 function AuthGate({ children }) {
@@ -161,7 +183,7 @@ function AuthScreen() {
 }
 
 function AppShell({ user }) {
-  const { profile, loading, save } = useUserProfile(user)
+  const { profile, loading, save, error } = useUserProfile(user)
   const [tab, setTab] = useState('home')
   const [settingsOpen, setSettingsOpen] = useState(false)
 
@@ -178,6 +200,11 @@ function AppShell({ user }) {
   return (
     <div className="min-h-screen bg-neutral-50 dark:bg-neutral-950 text-neutral-900 dark:text-white transition-colors">
       <TopBar onProfile={()=>setSettingsOpen(true)} photoURL={profile?.photoURL} />
+      {error && (
+        <div className="max-w-md mx-auto mt-3 px-4">
+          <div className="text-xs text-amber-500 bg-amber-500/10 border border-amber-500/30 rounded-lg p-2">{error}</div>
+        </div>
+      )}
       <main className="pb-24">
         <AnimatePresence mode="wait">
           {tab==='home' && <motion.div key="home" initial={{opacity:0, y:8}} animate={{opacity:1, y:0}} exit={{opacity:0, y:-8}} transition={{duration:.35, ease:'easeOut'}}>
@@ -458,6 +485,14 @@ function Field({ label, children }){
 function Input({ value, onChange, placeholder, type='text' }){
   return (
     <input type={type} value={value} onChange={(e)=>onChange(e.target.value)} placeholder={placeholder} className="w-full px-4 py-3 rounded-xl bg-white/10 border border-white/10 focus:outline-none focus:ring-2 focus:ring-white/20 placeholder-white/50" />
+  )
+}
+
+function Toggle({ checked, onChange }){
+  return (
+    <button onClick={()=>onChange(!checked)} className={`w-12 h-7 rounded-full relative transition ${checked? 'bg-neutral-900 dark:bg-white' : 'bg-white/20 border border-white/20'}`}>
+      <span className={`absolute top-1 left-1 h-5 w-5 rounded-full bg-white dark:bg-black transition-transform ${checked? 'translate-x-5' : ''}`}></span>
+    </button>
   )
 }
 
